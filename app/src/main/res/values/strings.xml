@@ -17,4 +17,10 @@
     <string name="erro_sair">Sair</string>
     <string name="nao_abriu">Não deu pra abrir o jogo agora. Tente de novo daqui a pouco.</string>
     <string name="erro_tentar">Tentar de novo</string>
+    <string name="nao_abriu_motivo">Não deu pra abrir o jogo: %1$s.</string>
+    <string name="motivo_tempo">o site do jogo demorou mais de 15 segundos para responder</string>
+    <string name="motivo_rede">erro de rede (%1$s)</string>
+    <string name="motivo_recusou">o site do jogo recusou o acesso (erro %1$d)</string>
+    <string name="motivo_http">o site do jogo respondeu erro %1$d</string>
+    <string name="motivo_ssl">o certificado de segurança do site do jogo não é válido</string>
 </resources>

@@ -17,4 +17,10 @@
     <string name="erro_sair">Exit</string>
     <string name="nao_abriu">Could not open the game right now. Try again in a moment.</string>
     <string name="erro_tentar">Try again</string>
+    <string name="nao_abriu_motivo">Could not open the game: %1$s.</string>
+    <string name="motivo_tempo">the game site took more than 15 seconds to answer</string>
+    <string name="motivo_rede">network error (%1$s)</string>
+    <string name="motivo_recusou">the game site refused access (error %1$d)</string>
+    <string name="motivo_http">the game site answered with error %1$d</string>
+    <string name="motivo_ssl">the game site security certificate is not valid</string>
 </resources>

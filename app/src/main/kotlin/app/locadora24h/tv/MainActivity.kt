@@ -8,11 +8,14 @@ import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.os.SystemClock
+import android.util.Log
 import android.view.InputDevice
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
@@ -22,9 +25,12 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -43,11 +49,15 @@ private class AgendaHandler(private val handler: Handler) : Agenda {
 class MainActivity : Activity(), Alvo, AcoesApp {
 
     companion object {
+        /** Tag do Logcat: no PC, `adb logcat -s L24H` mostra cada passo. */
+        const val TAG = "L24H"
         private const val ABRIR_JOGO_MS = 15_000L   // se o jogo não carregar em 15 s, volta ao catálogo
         private const val MEDIR_FPS_APOS_MS = 8_000L // mede os quadros por segundo 8 s depois do jogo abrir
         private const val SPLASH_MAX_MS = 8_000L
         private const val FUNDO = "#0E0F14"
     }
+
+    private fun l(msg: String) { Log.i(TAG, msg) }
 
     private lateinit var raiz: FrameLayout
     private lateinit var webView: WebView
@@ -57,6 +67,8 @@ class MainActivity : Activity(), Alvo, AcoesApp {
     private lateinit var verificador: VerificadorLinks
     private lateinit var prefs: SharedPreferences
     private lateinit var chrome: WebChromeClient
+    private lateinit var uaCatalogo: String
+    private lateinit var uaJogo: String
     private val handler = Handler(Looper.getMainLooper())
     private val catalogoHost: String? = Uri.parse(BuildConfig.START_URL).host
 
@@ -73,6 +85,7 @@ class MainActivity : Activity(), Alvo, AcoesApp {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        l("onCreate: app ${BuildConfig.VERSION_NAME} (código ${BuildConfig.VERSION_CODE}), Android ${Build.VERSION.SDK_INT}, ${Build.MODEL}, abrindo ${BuildConfig.START_URL}")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // tela sempre acesa com o app aberto
         val matchParent = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         raiz = FrameLayout(this).apply { setBackgroundColor(Color.parseColor(FUNDO)) }
@@ -93,7 +106,10 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         verificador = VerificadorLinks { id, r -> runOnUiThread { entregarStatus(id, r) } }
         configurarWebView()
         handler.postDelayed({ esconderSplash() }, SPLASH_MAX_MS)
-        if (savedInstanceState != null) webView.restoreState(savedInstanceState) else webView.loadUrl(BuildConfig.START_URL)
+        if (savedInstanceState != null) webView.restoreState(savedInstanceState) else {
+            l("loadUrl (catálogo): ${BuildConfig.START_URL}")
+            webView.loadUrl(BuildConfig.START_URL)
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -104,15 +120,23 @@ class MainActivity : Activity(), Alvo, AcoesApp {
             domStorageEnabled = true                  // localStorage (favoritos, recentes...)
             @Suppress("DEPRECATION")
             databaseEnabled = true
-            mediaPlaybackRequiresUserGesture = false
-            setSupportMultipleWindows(false)          // links com target=_blank abrem na mesma tela
-            javaScriptCanOpenWindowsAutomatically = false
+            mediaPlaybackRequiresUserGesture = false  // o som não precisa de toque
+            setSupportMultipleWindows(true)           // window.open / target=_blank: tratados em onCreateWindow
+            javaScriptCanOpenWindowsAutomatically = true
             allowFileAccess = false
             allowContentAccess = false
             useWideViewPort = true
             loadWithOverviewMode = true
             cacheMode = WebSettings.LOAD_DEFAULT      // cache padrão
+            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         }
+        // User agent: o WebView se anuncia com "; wv" e "Version/4.0", e muitos sites de jogo recusam isso.
+        // No catálogo mantemos o original; nas páginas de jogo usamos o de um Chrome comum.
+        uaCatalogo = webView.settings.userAgentString
+        uaJogo = UserAgents.deJogo(uaCatalogo)
+        l("user agent do catálogo: $uaCatalogo")
+        l("user agent dos jogos:   $uaJogo")
+
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null) // aceleração por hardware
         webView.overScrollMode = View.OVER_SCROLL_NEVER      // sem efeito de "puxar" nas bordas
         webView.isVerticalScrollBarEnabled = false
@@ -122,7 +146,7 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         webView.setBackgroundColor(Color.parseColor(FUNDO))
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
-            setAcceptThirdPartyCookies(webView, true)
+            setAcceptThirdPartyCookies(webView, true) // jogos que guardam o progresso em outro domínio
         }
         webView.addJavascriptInterface(PonteJs(this), "Locadora24hApp")
         webView.addJavascriptInterface(PonteInterna(this), "LocadoraApp")
@@ -130,20 +154,31 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         webView.webViewClient = object : WebViewClient() {
             // Todos os links abrem dentro do próprio app; esquemas estranhos (intent:, market:...) são bloqueados.
             @Deprecated("Usado no Android 6 e anteriores")
-            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = !url.startsWith("http")
+            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+                l("shouldOverrideUrlLoading (api<24): $url")
+                if (!url.startsWith("http")) return true
+                ajustarUserAgent(url)
+                return false
+            }
 
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val esquema = request.url.scheme ?: return true
-                return esquema != "http" && esquema != "https"
+                l("shouldOverrideUrlLoading: ${request.url} (quadro principal: ${request.isForMainFrame})")
+                if (esquema != "http" && esquema != "https") return true
+                if (request.isForMainFrame) ajustarUserAgent(request.url.toString())
+                return false
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                l("onPageStarted: $url")
+                ajustarUserAgent(url)
                 controle.soltarTudo()
                 handler.removeCallbacks(medirFps)
                 if (hostDe(url) == catalogoHost) { jogoForcado = false; jogoId = null } // voltou ao catálogo
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
+                l("onPageFinished: $url")
                 esconderSplash()
                 view.requestFocus()
                 if (hostDe(url) == catalogoHost) aoCatalogoCarregar() else aoJogoCarregar()
@@ -151,25 +186,48 @@ class MainActivity : Activity(), Alvo, AcoesApp {
 
             @Deprecated("Usado no Android 5.x")
             override fun onReceivedError(view: WebView, errorCode: Int, description: String?, failingUrl: String?) {
-                if (failingUrl != null && failingUrl == view.url) aoFalhaDePagina()
+                l("onReceivedError (api<23): código $errorCode, $description, url $failingUrl")
+                if (failingUrl != null && failingUrl == view.url) aoFalhaDePagina(getString(R.string.motivo_rede, description ?: errorCode.toString()))
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) aoFalhaDePagina()
+                l("onReceivedError: quadro principal=${request.isForMainFrame}, código ${error.errorCode}, ${error.description}, url ${request.url}")
+                if (request.isForMainFrame) aoFalhaDePagina(getString(R.string.motivo_rede, error.description?.toString() ?: error.errorCode.toString()))
+            }
+
+            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                val codigo = errorResponse.statusCode
+                l("onReceivedHttpError: quadro principal=${request.isForMainFrame}, HTTP $codigo ${errorResponse.reasonPhrase}, url ${request.url}")
+                if (request.isForMainFrame && codigo >= 400) aoFalhaDePagina(motivoHttp(codigo))
+            }
+
+            override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
+                l("onReceivedSslError: erro ${error.primaryError}, url ${error.url}")
+                handler.cancel() // NÃO ignora: nunca aceita certificado inválido
+                aoFalhaDePagina(getString(R.string.motivo_ssl))
+            }
+
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                l("onRenderProcessGone: travou=${!detail.didCrash()} (crash=${detail.didCrash()})")
+                handler.post { recreate() } // o WebView morreu: recria a tela do app
+                return true
             }
         }
 
-        // Vídeo / jogo em tela cheia pedido pela página
+        // Vídeo / jogo em tela cheia pedido pela página e janelas novas
         chrome = object : WebChromeClient() {
             override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                l("onShowCustomView (tela cheia)")
                 if (telaCheia != null) { callback.onCustomViewHidden(); return }
                 telaCheia = view
                 telaCheiaCb = callback
                 webView.visibility = View.GONE
                 raiz.addView(view, 0, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                view.requestFocus()
             }
 
             override fun onHideCustomView() {
+                l("onHideCustomView")
                 val v = telaCheia ?: return
                 raiz.removeView(v)
                 telaCheia = null
@@ -178,11 +236,51 @@ class MainActivity : Activity(), Alvo, AcoesApp {
                 webView.visibility = View.VISIBLE
                 webView.requestFocus()
             }
+
+            // window.open / target=_blank: a URL nova carrega NESTA MESMA WebView (nunca abre outra janela)
+            override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
+                l("onCreateWindow: isDialog=$isDialog, gesto=$isUserGesture")
+                val transporte = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                val temp = WebView(this@MainActivity)
+                temp.webViewClient = object : WebViewClient() {
+                    private var feito = false
+                    private fun destino(url: String?) {
+                        if (feito || url.isNullOrEmpty() || url == "about:blank") return
+                        if (!(url.startsWith("http://") || url.startsWith("https://"))) return
+                        feito = true
+                        l("janela nova -> mesma WebView: $url")
+                        handler.post {
+                            ajustarUserAgent(url)
+                            webView.loadUrl(url)
+                            temp.stopLoading()
+                            temp.destroy()
+                        }
+                    }
+
+                    @Deprecated("Usado no Android 6 e anteriores")
+                    override fun shouldOverrideUrlLoading(v: WebView, url: String): Boolean { destino(url); return true }
+                    override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean { destino(request.url.toString()); return true }
+                    override fun onPageStarted(v: WebView, url: String?, favicon: Bitmap?) { destino(url) }
+                }
+                transporte.webView = temp
+                resultMsg.sendToTarget()
+                return true
+            }
         }
         webView.webChromeClient = chrome
     }
 
     private fun hostDe(url: String?): String? = url?.let { try { Uri.parse(it).host } catch (e: Exception) { null } }
+
+    /** Catálogo: user agent original. Páginas de jogo: user agent de um Chrome comum (sem "; wv"). */
+    private fun ajustarUserAgent(url: String?) {
+        val h = hostDe(url) ?: return
+        val alvo = if (h == catalogoHost) uaCatalogo else uaJogo
+        if (webView.settings.userAgentString != alvo) {
+            webView.settings.userAgentString = alvo
+            l("user agent trocado para ${if (h == catalogoHost) "catálogo" else "jogo"} ($h)")
+        }
+    }
 
     private fun esconderSplash() {
         if (splash.visibility != View.GONE) splash.visibility = View.GONE
@@ -244,7 +342,8 @@ class MainActivity : Activity(), Alvo, AcoesApp {
 
     override fun enviar(codigo: Int, acao: Int, repeticao: Int) {
         val agora = SystemClock.uptimeMillis()
-        webView.dispatchKeyEvent(KeyEvent(agora, agora, acao, codigo, repeticao, 0,
+        // jogo em tela cheia (Fullscreen API): a tecla vai para a vista de tela cheia
+        (telaCheia ?: webView).dispatchKeyEvent(KeyEvent(agora, agora, acao, codigo, repeticao, 0,
             KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD))
     }
 
@@ -275,10 +374,11 @@ class MainActivity : Activity(), Alvo, AcoesApp {
 
     override fun abrirMenu() {
         if (menu.aberto) return
+        l("menu do app aberto (em jogo)")
         menu.mostrar(getString(R.string.menu_titulo), null, listOf(
             getString(R.string.menu_continuar) to { },
             getString(R.string.menu_ver_mapa) to { mostrarMapa() },
-            getString(R.string.menu_voltar_catalogo) to { voltarAoCatalogo(false) }
+            getString(R.string.menu_voltar_catalogo) to { voltarAoCatalogo(null) }
         ))
     }
 
@@ -292,26 +392,37 @@ class MainActivity : Activity(), Alvo, AcoesApp {
     private fun noCatalogo(): Boolean = hostDe(webView.url) == catalogoHost
 
     override fun abrirJogo(url: String?, mapaJson: String?, id: String?) {
+        l("abrirJogo recebido: id=$id, url=$url")
         runOnUiThread {
-            if (!noCatalogo()) return@runOnUiThread // só o catálogo pode mandar abrir um jogo
-            if (url.isNullOrBlank() || !(url.startsWith("https://") || url.startsWith("http://"))) return@runOnUiThread
+            if (!noCatalogo()) { l("abrirJogo ignorado: a página atual não é o catálogo (${webView.url})"); return@runOnUiThread }
+            if (url.isNullOrBlank() || !(url.startsWith("https://") || url.startsWith("http://"))) { l("abrirJogo ignorado: URL inválida"); return@runOnUiThread }
             mapaAtual = MapaParser.parse(mapaJson)
             jogoForcado = true
             jogoCarregou = false
             jogoId = id
             val token = ++tokenJogo
+            ajustarUserAgent(url)
+            l("loadUrl (jogo): $url")
             webView.loadUrl(url)
-            // Se a página não carregar em 15 s, volta ao catálogo e avisa o site
-            handler.postDelayed({ if (token == tokenJogo && jogoForcado && !jogoCarregou) voltarAoCatalogo(true) }, ABRIR_JOGO_MS)
+            // Se a página não carregar em 15 s, volta ao catálogo e avisa o site (com o motivo)
+            handler.postDelayed({
+                if (token == tokenJogo && jogoForcado && !jogoCarregou) {
+                    l("tempo esgotado: o jogo não carregou em 15 s ($url)")
+                    aoFalhaDePagina(getString(R.string.motivo_tempo))
+                }
+            }, ABRIR_JOGO_MS)
         }
     }
 
     override fun definirMapa(json: String?) {
+        l("mapa do controle recebido: ${json?.take(80)}")
         mapaAtual = MapaParser.parse(json)
     }
 
     override fun verificarLinks(json: String?) {
-        runOnUiThread { if (noCatalogo()) verificador.verificar(json) }
+        runOnUiThread {
+            if (noCatalogo()) { l("verificarLinks: ${VerificadorLinks.lerLista(json).size} link(s)"); verificador.verificar(json) }
+        }
     }
 
     override fun infoAparelho(): String {
@@ -340,11 +451,13 @@ class MainActivity : Activity(), Alvo, AcoesApp {
     override fun desempenho(): String = prefs.getString("fps", "{}") ?: "{}"
 
     override fun sair() {
+        l("sair() pedido pelo site")
         runOnUiThread { if (noCatalogo()) finish() }
     }
 
     override fun salvarFps(id: String?, fps: Double) {
         if (id.isNullOrBlank() || id != jogoId || fps.isNaN() || fps.isInfinite() || fps < 0 || fps > 240) return
+        l("fps medido: $id = $fps")
         synchronized(prefs) {
             val o = try { JSONObject(prefs.getString("fps", "{}") ?: "{}") } catch (e: Exception) { JSONObject() }
             o.put(id, JSONObject().put("fps", Math.round(fps * 10) / 10.0).put("quando", System.currentTimeMillis()))
@@ -388,24 +501,32 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         val aviso = avisoPendente
         avisoPendente = null
         handler.postDelayed({
-            // o site atualiza os selos com o desempenho medido e mostra o aviso, se houver
+            // o site atualiza os selos com o desempenho medido e mostra o aviso (com o motivo), se houver
             webView.evaluateJavascript("(function(){var s=window.L24HTV;if(!s)return;try{s.aoDesempenho&&s.aoDesempenho()}catch(e){}" +
                 (if (aviso != null) "try{s.toast(${JSONObject.quote(aviso)})}catch(e){}" else "") + "})();", null)
         }, 900)
     }
 
-    private fun aoFalhaDePagina() {
-        if (jogoForcado || (jogoId != null && !noCatalogo())) voltarAoCatalogo(true) // o jogo não abriu: volta e avisa
+    /** Falha ao carregar uma página. Jogo: volta ao catálogo avisando o motivo. Catálogo: mostra "sem conexão". */
+    private fun aoFalhaDePagina(motivo: String) {
+        l("falha de página: $motivo (jogoForcado=$jogoForcado, jogoId=$jogoId)")
+        if (jogoForcado || (jogoId != null && !noCatalogo())) voltarAoCatalogo(motivo)
         else mostrarErro()
     }
 
-    private fun voltarAoCatalogo(comAviso: Boolean) {
+    /** O motivo, em texto simples, para o site mostrar no aviso: "o site do jogo respondeu erro 503". */
+    private fun motivoHttp(codigo: Int): String =
+        if (codigo == 401 || codigo == 403 || codigo == 429) getString(R.string.motivo_recusou, codigo) else getString(R.string.motivo_http, codigo)
+
+    private fun voltarAoCatalogo(motivo: String?) {
+        l("voltando ao catálogo" + (if (motivo != null) " (motivo: $motivo)" else ""))
         jogoForcado = false
         jogoId = null
         tokenJogo++
         handler.removeCallbacks(medirFps)
-        avisoPendente = if (comAviso) getString(R.string.nao_abriu) else null
+        avisoPendente = if (motivo != null) getString(R.string.nao_abriu_motivo, motivo) else null
         webView.stopLoading()
+        ajustarUserAgent(BuildConfig.START_URL)
         webView.loadUrl(BuildConfig.START_URL)
     }
 

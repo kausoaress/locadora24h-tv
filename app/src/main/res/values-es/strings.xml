@@ -17,4 +17,10 @@
     <string name="erro_sair">Salir</string>
     <string name="nao_abriu">No se pudo abrir el juego ahora. Inténtalo de nuevo en un rato.</string>
     <string name="erro_tentar">Intentar de nuevo</string>
+    <string name="nao_abriu_motivo">No se pudo abrir el juego: %1$s.</string>
+    <string name="motivo_tempo">el sitio del juego tardó más de 15 segundos en responder</string>
+    <string name="motivo_rede">error de red (%1$s)</string>
+    <string name="motivo_recusou">el sitio del juego rechazó el acceso (error %1$d)</string>
+    <string name="motivo_http">el sitio del juego respondió con error %1$d</string>
+    <string name="motivo_ssl">el certificado de seguridad del sitio del juego no es válido</string>
 </resources>
