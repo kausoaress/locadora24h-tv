@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tela de abertura: fundo escuro #0E0F14 com o selo amarelo "24h" no centro. É o fundo da janela, por isso aparece
+     antes de qualquer coisa carregar (sem flash branco). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/fundo" />
+    <item>
+        <bitmap
+            android:gravity="center"
+            android:src="@drawable/splash_logo" />
+    </item>
+</layer-list>

@@ -1,30 +1,46 @@
 package app.locadora24h.tv
 
-import android.os.Handler
-import android.os.SystemClock
 import android.view.InputDevice
-import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.view.MotionEvent
 
-/** O que o Controle precisa da tela do app. */
+/** Marca "daqui a X ms, rode isto". No app é um Handler; nos testes é um relógio de mentira. */
+interface Agenda {
+    fun depois(ms: Long, r: Runnable)
+    fun cancelar(r: Runnable)
+}
+
+/** O que a ponte do controle precisa da tela do app. */
 interface Alvo {
     /** true quando o WebView está num site de jogo (e não no catálogo). */
     fun emJogo(): Boolean
     fun mapa(): Mapa
+
     /** Entrega uma tecla ao WebView, como se viesse de um teclado de verdade. */
-    fun enviar(ev: KeyEvent)
+    fun enviar(codigo: Int, acao: Int, repeticao: Int)
+
+    /** Catálogo: B / voltar. */
     fun voltar()
+
+    /** Dentro de um jogo: abre o menu do app (Continuar / Ver mapa / Voltar ao catálogo). */
     fun abrirMenu()
+
+    // Enquanto o menu do app está aberto, o controle navega nele (setas ou analógico, A escolhe, B fecha)
+    fun menuAberto(): Boolean
+    fun menuMover(delta: Int)
+    fun menuEscolher()
+    fun menuFechar()
 }
 
 /**
  * Ponte do controle: recebe os botões do controle (e o analógico) e os transforma em teclas.
- *  - No catálogo: direcional e analógico = setas, A = Enter, B = voltar (X = X, Y = Y, LB = Page Up, RB = Page Down,
- *    que são as teclas que o modo TV do site entende).
+ *  - Menu do app aberto: setas/analógico andam no menu, A escolhe, B fecha.
+ *  - Catálogo: direcional e analógico = setas, A = Enter, B = voltar (o site recebe Escape), X = X, Y = Y,
+ *    LB = Page Up, RB = Page Down, Select = C (celular como teclado), Start = M (menu do site).
  *  - Dentro de um jogo: cada botão vira a tecla do mapa do jogo. Segurar Start por 2 s abre o menu do app.
+ *    (O "voltar" do controle remoto, que não é botão de controle, também abre o menu: isso fica na tela do app.)
  */
-class Controle(private val alvo: Alvo, private val handler: Handler) {
+class Controle(private val alvo: Alvo, private val agenda: Agenda) {
 
     companion object {
         const val ZONA_MORTA = 0.5f
@@ -34,6 +50,9 @@ class Controle(private val alvo: Alvo, private val handler: Handler) {
         const val CAT_SEGUINTES = 120L  // ...e as seguintes
         const val JOGO_PRIMEIRA = 500L  // jogo: repetição parecida com a de um teclado
         const val JOGO_SEGUINTES = 40L
+
+        private const val DOWN = KeyEvent.ACTION_DOWN
+        private const val UP = KeyEvent.ACTION_UP
 
         private val DOS_BOTOES = setOf(
             KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y,
@@ -64,92 +83,106 @@ class Controle(private val alvo: Alvo, private val handler: Handler) {
         } else k
     }
 
-    private var menuAbriu = false
-    private val abrirMenu = Runnable { menuAbriu = true; alvo.abrirMenu() }
+    private var menuAbriuPeloStart = false
+    private val abrirMenu = Runnable { menuAbriuPeloStart = true; alvo.abrirMenu() }
 
     // ----- botões -----
 
     /** true = o app tratou a tecla (o WebView não deve vê-la). */
-    fun aoTecla(e: KeyEvent): Boolean {
-        val k = e.keyCode
+    fun aoTecla(e: KeyEvent): Boolean = aoBotao(e.keyCode, e.action, e.repeatCount)
+
+    fun aoBotao(k: Int, acao: Int, repeticao: Int): Boolean {
+        if (alvo.menuAberto()) return noMenu(k, acao)
         if (k !in DOS_BOTOES) return false
-        return if (alvo.emJogo()) noJogo(e) else noCatalogo(e)
+        return if (alvo.emJogo()) noJogo(k, acao, repeticao) else noCatalogo(k, acao, repeticao)
     }
 
-    private fun noCatalogo(e: KeyEvent): Boolean {
-        when (e.keyCode) {
-            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER -> return repassar(e, KeyEvent.KEYCODE_ENTER, soPrimeira = true)
-            KeyEvent.KEYCODE_BUTTON_B -> { if (e.action == KeyEvent.ACTION_UP) alvo.voltar(); return true }
-            KeyEvent.KEYCODE_BUTTON_X -> return repassar(e, KeyEvent.KEYCODE_X, soPrimeira = true)
-            KeyEvent.KEYCODE_BUTTON_Y -> return repassar(e, KeyEvent.KEYCODE_Y, soPrimeira = true)
-            KeyEvent.KEYCODE_BUTTON_L1 -> return repassar(e, KeyEvent.KEYCODE_PAGE_UP, soPrimeira = true)
-            KeyEvent.KEYCODE_BUTTON_R1 -> return repassar(e, KeyEvent.KEYCODE_PAGE_DOWN, soPrimeira = true)
-            KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_SELECT -> return true
+    private fun noMenu(k: Int, acao: Int): Boolean {
+        when (k) {
+            KeyEvent.KEYCODE_DPAD_UP -> { if (acao == DOWN) alvo.menuMover(-1); return true }
+            KeyEvent.KEYCODE_DPAD_DOWN -> { if (acao == DOWN) alvo.menuMover(1); return true }
+            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { if (acao == UP) alvo.menuEscolher(); return true }
+            KeyEvent.KEYCODE_BUTTON_B -> { if (acao == UP) alvo.menuFechar(); return true }
+            KeyEvent.KEYCODE_BUTTON_START -> { if (acao == UP) menuAbriuPeloStart = false; return true }
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y,
+            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1, KeyEvent.KEYCODE_BUTTON_SELECT -> return true
+        }
+        return false
+    }
+
+    private fun noCatalogo(k: Int, acao: Int, repeticao: Int): Boolean {
+        when (k) {
+            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER -> return repassar(KeyEvent.KEYCODE_ENTER, acao, repeticao, soPrimeira = true)
+            KeyEvent.KEYCODE_BUTTON_B -> { if (acao == UP) alvo.voltar(); return true }
+            KeyEvent.KEYCODE_BUTTON_X -> return repassar(KeyEvent.KEYCODE_X, acao, repeticao, soPrimeira = true)
+            KeyEvent.KEYCODE_BUTTON_Y -> return repassar(KeyEvent.KEYCODE_Y, acao, repeticao, soPrimeira = true)
+            KeyEvent.KEYCODE_BUTTON_L1 -> return repassar(KeyEvent.KEYCODE_PAGE_UP, acao, repeticao, soPrimeira = true)
+            KeyEvent.KEYCODE_BUTTON_R1 -> return repassar(KeyEvent.KEYCODE_PAGE_DOWN, acao, repeticao, soPrimeira = true)
+            KeyEvent.KEYCODE_BUTTON_SELECT -> return repassar(KeyEvent.KEYCODE_C, acao, repeticao, soPrimeira = true) // abre o celular como teclado
+            KeyEvent.KEYCODE_BUTTON_START -> return repassar(KeyEvent.KEYCODE_M, acao, repeticao, soPrimeira = true)  // abre o menu do site
         }
         return false // direcional: o WebView já entende como setas (e o sistema repete ao segurar)
     }
 
-    private fun noJogo(e: KeyEvent): Boolean {
+    private fun noJogo(k: Int, acao: Int, repeticao: Int): Boolean {
         val mapa = alvo.mapa()
-        val k = e.keyCode
         when (k) {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT ->
-                return repassar(e, teclaDoDirecional(k, mapa.direcional), soPrimeira = false)
-            KeyEvent.KEYCODE_BUTTON_START -> return start(e, mapa)
+                return repassar(teclaDoDirecional(k, mapa.direcional), acao, repeticao, soPrimeira = false)
+            KeyEvent.KEYCODE_BUTTON_START -> return start(acao, repeticao, mapa)
         }
         val botao = nomeDoBotao(k) ?: return false
         val cod = mapa.botoes[botao] ?: return true // botão sem uso neste jogo
-        return repassar(e, cod, soPrimeira = false)
+        return repassar(cod, acao, repeticao, soPrimeira = false)
     }
 
     /** Start curto = a tecla do mapa. Start segurado por 2 s = menu do app. */
-    private fun start(e: KeyEvent, mapa: Mapa): Boolean {
-        if (e.action == KeyEvent.ACTION_DOWN) {
-            if (e.repeatCount == 0) { menuAbriu = false; handler.postDelayed(abrirMenu, MENU_MS) }
+    private fun start(acao: Int, repeticao: Int, mapa: Mapa): Boolean {
+        if (acao == DOWN) {
+            if (repeticao == 0) { menuAbriuPeloStart = false; agenda.depois(MENU_MS, abrirMenu) }
             return true
         }
-        handler.removeCallbacks(abrirMenu)
-        if (!menuAbriu) mapa.botoes["Start"]?.let { toque(it) }
-        menuAbriu = false
+        agenda.cancelar(abrirMenu)
+        if (!menuAbriuPeloStart) mapa.botoes["Start"]?.let { toque(it) }
+        menuAbriuPeloStart = false
         return true
     }
 
     private fun toque(codigo: Int) {
-        alvo.enviar(tecla(KeyEvent.ACTION_DOWN, codigo, 0))
-        handler.postDelayed({ alvo.enviar(tecla(KeyEvent.ACTION_UP, codigo, 0)) }, TOQUE_MS)
+        alvo.enviar(codigo, DOWN, 0)
+        agenda.depois(TOQUE_MS, Runnable { alvo.enviar(codigo, UP, 0) })
     }
 
-    private fun repassar(e: KeyEvent, codigo: Int, soPrimeira: Boolean): Boolean {
-        if (soPrimeira && e.action == KeyEvent.ACTION_DOWN && e.repeatCount > 0) return true
-        alvo.enviar(KeyEvent(e.downTime, e.eventTime, e.action, codigo, e.repeatCount, e.metaState,
-            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD))
+    private fun repassar(codigo: Int, acao: Int, repeticao: Int, soPrimeira: Boolean): Boolean {
+        if (soPrimeira && acao == DOWN && repeticao > 0) return true
+        alvo.enviar(codigo, acao, repeticao)
         return true
-    }
-
-    private fun tecla(acao: Int, codigo: Int, repeticao: Int): KeyEvent {
-        val agora = SystemClock.uptimeMillis()
-        return KeyEvent(agora, agora, acao, codigo, repeticao, 0,
-            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD)
     }
 
     // ----- analógico esquerdo -----
     // 0 = esquerda, 1 = direita, 2 = cima, 3 = baixo
     private val ligada = BooleanArray(4)
     private val codigoPressionado = IntArray(4)
+    private val enviouDown = BooleanArray(4) // só soltamos a tecla se ela foi mesmo apertada
     private val repetidores = Array(4) { Repetidor(it) }
 
     private inner class Repetidor(private val i: Int) : Runnable {
         var n = 0
         override fun run() {
             n++
-            alvo.enviar(tecla(KeyEvent.ACTION_DOWN, codigoPressionado[i], n))
-            handler.postDelayed(this, if (alvo.emJogo()) JOGO_SEGUINTES else CAT_SEGUINTES)
+            if (alvo.menuAberto()) {
+                if (i == 2) alvo.menuMover(-1) else if (i == 3) alvo.menuMover(1)
+            } else {
+                alvo.enviar(codigoPressionado[i], DOWN, n)
+            }
+            agenda.depois(if (alvo.emJogo() && !alvo.menuAberto()) JOGO_SEGUINTES else CAT_SEGUINTES, this)
         }
     }
 
     private fun direcao(i: Int, ligar: Boolean) {
         if (ligada[i] == ligar) return
         ligada[i] = ligar
+        val noMenu = alvo.menuAberto()
         if (ligar) {
             val base = when (i) {
                 0 -> KeyEvent.KEYCODE_DPAD_LEFT
@@ -157,32 +190,38 @@ class Controle(private val alvo: Alvo, private val handler: Handler) {
                 2 -> KeyEvent.KEYCODE_DPAD_UP
                 else -> KeyEvent.KEYCODE_DPAD_DOWN
             }
-            codigoPressionado[i] = if (alvo.emJogo()) teclaDoDirecional(base, alvo.mapa().direcional) else base
-            alvo.enviar(tecla(KeyEvent.ACTION_DOWN, codigoPressionado[i], 0))
+            val jogo = alvo.emJogo() && !noMenu
+            codigoPressionado[i] = if (jogo) teclaDoDirecional(base, alvo.mapa().direcional) else base
+            if (noMenu) { if (i == 2) alvo.menuMover(-1) else if (i == 3) alvo.menuMover(1) }
+            else alvo.enviar(codigoPressionado[i], DOWN, 0)
+            enviouDown[i] = !noMenu
             repetidores[i].n = 0
-            handler.postDelayed(repetidores[i], if (alvo.emJogo()) JOGO_PRIMEIRA else CAT_PRIMEIRA)
+            agenda.depois(if (jogo) JOGO_PRIMEIRA else CAT_PRIMEIRA, repetidores[i])
         } else {
-            handler.removeCallbacks(repetidores[i])
-            alvo.enviar(tecla(KeyEvent.ACTION_UP, codigoPressionado[i], 0))
+            agenda.cancelar(repetidores[i])
+            if (enviouDown[i]) { alvo.enviar(codigoPressionado[i], UP, 0); enviouDown[i] = false }
         }
+    }
+
+    /** Posição do analógico esquerdo (-1 a 1). */
+    fun aoAnalogico(x: Float, y: Float) {
+        direcao(0, x < -ZONA_MORTA)
+        direcao(1, x > ZONA_MORTA)
+        direcao(2, y < -ZONA_MORTA)
+        direcao(3, y > ZONA_MORTA)
     }
 
     /** true = tratou o movimento do analógico. */
     fun aoMovimento(e: MotionEvent): Boolean {
         if ((e.source and InputDevice.SOURCE_JOYSTICK) != InputDevice.SOURCE_JOYSTICK || e.action != MotionEvent.ACTION_MOVE) return false
-        val x = e.getAxisValue(MotionEvent.AXIS_X)
-        val y = e.getAxisValue(MotionEvent.AXIS_Y)
-        direcao(0, x < -ZONA_MORTA)
-        direcao(1, x > ZONA_MORTA)
-        direcao(2, y < -ZONA_MORTA)
-        direcao(3, y > ZONA_MORTA)
+        aoAnalogico(e.getAxisValue(MotionEvent.AXIS_X), e.getAxisValue(MotionEvent.AXIS_Y))
         return true
     }
 
     /** Solta tudo (ao sair do app ou trocar de tela), para nenhuma tecla ficar "presa". */
     fun soltarTudo() {
-        handler.removeCallbacks(abrirMenu)
-        menuAbriu = false
+        agenda.cancelar(abrirMenu)
+        menuAbriuPeloStart = false
         for (i in 0..3) direcao(i, false)
     }
 }

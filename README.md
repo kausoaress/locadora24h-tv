@@ -11,11 +11,14 @@ num WebView em tela cheia e entrega o controle de videogame ao site como teclas 
 
 | Onde | O que acontece |
 |---|---|
-| **Catálogo** (locadora24h.vercel.app) | Direcional e analógico esquerdo = setas · A = Enter · B = voltar · X = `X` · Y = `Y` · LB = Page Up · RB = Page Down (as teclas do modo TV do site) |
-| **Dentro de um jogo** | Cada botão vira a tecla do mapa do jogo, entregue ao WebView como tecla de verdade |
-| **Start segurado por 2 s** (dentro de um jogo) | Menu do app: *Ver mapa do controle / Voltar ao catálogo / Continuar* |
+| **Menu do app aberto** | Direcional ou analógico andam no menu · **A** escolhe · **B** fecha (o menu fica por cima do WebView e não rouba o foco) |
+| **Catálogo** (locadora24h.vercel.app) | Direcional e analógico esquerdo = setas · **A** = Enter · **B** e o voltar do controle remoto = tecla Escape para o site (ele decide: volta uma tela ou pergunta se quer sair) · **X** = `X` · **Y** = `Y` · **LB** = Page Up · **RB** = Page Down · **Select** = `C` (celular como teclado) · **Start** = `M` (menu do site) |
+| **Dentro de um jogo** | Cada botão vira a tecla do mapa do jogo, entregue ao WebView como tecla de verdade. O **voltar do controle remoto não sai do jogo**: abre o menu do app (*Continuar / Ver mapa do controle / Voltar ao catálogo*) |
+| **Start segurado por 2 s** (dentro de um jogo) | Abre esse mesmo menu |
 
-O mapa vem do site: antes de abrir o jogo, o site chama `Locadora24hApp.setMapa(json)`. Exemplo:
+Dentro de um jogo o botão **B** do controle é uma tecla do jogo (a do mapa), não "voltar": se ele abrisse o menu, os jogos ficariam injogáveis.
+
+O mapa vem do site: ao abrir o jogo, o site manda o mapa (JSON). Exemplo:
 
 ```json
 { "A": "Z", "B": "X", "X": "C", "Y": "V", "LB": "Q", "RB": "E", "Start": "Enter", "Select": "Escape", "direcional": "setas" }
@@ -24,15 +27,35 @@ O mapa vem do site: antes de abrir o jogo, o site chama `Locadora24hApp.setMapa(
 - `direcional` aceita `"setas"` ou `"wasd"` (vale também para o analógico esquerdo).
 - Botão que não está no mapa fica **sem uso** (não faz nada).
 - Teclas aceitas: letras, números, `Enter`, `Escape`, `Space`, `Shift`, `Ctrl`, `Alt`, `Tab`, `Backspace`, `F1`–`F12` e as setas (`Up`, `Down`, `Left`, `Right`).
-- **Sem mapa** (o site chama `limparMapa()`): direcional = setas, A = Enter, B = Escape, X = Z, Y = X, Start = Enter.
+- **Sem mapa**: direcional = setas, A = Enter, B = Escape, X = Z, Y = X, Start = Enter.
 
 Limitação: como o app entrega o controle como teclas, um jogo que use a Gamepad API do navegador (controle "de verdade") não recebe o controle.
+
+## Ponte com o site (`window.Locadora24hApp`)
+
+O modo TV do site usa estas chamadas (todas devolvem texto ou JSON e nunca lançam erro). Só são obedecidas `abrirJogo`, `verificarLinks` e `sair`
+quando quem chama é o catálogo (e não um site de jogo):
+
+| Chamada | O que faz |
+|---|---|
+| `abrirJogo(url, mapaJson, id)` | Guarda o mapa, marca "em jogo" e abre a URL. Se a página não carregar em **15 s** (ou der erro), volta ao catálogo e avisa o site (`window.L24HTV.toast(...)`) |
+| `verificarLinks('[{"id":"...","url":"..."}]')` | Confere se cada site responde (HEAD, ou GET se não aceitar HEAD; limite de 6 s; **no máximo 3 ao mesmo tempo**, em segundo plano) e devolve `window.L24HTV.aoStatusLinks({id:{ok,ms,quando}})`. Site que responde 401/403/405/429 conta como "no ar" (só barrou o robô) |
+| `infoAparelho()` | `{memoriaMB, modelo, androidApi}` |
+| `controles()` | Nomes dos controles de jogo conectados, ex. `["8BitDo Pro 2"]` |
+| `desempenho()` | `{id:{fps,quando}}`: quadros por segundo medidos de verdade nesta TV |
+| `setMapa(json)`, `limparMapa()`, `versao()`, `sair()` | Definem/limpam o mapa, devolvem a versão do app, fecham o app |
+
+**Quadros por segundo:** 8 segundos depois de um jogo abrir, o app conta `requestAnimationFrame` por 3 s e guarda o resultado (por jogo, no próprio app).
+É isso que alimenta o selo "Roda liso nesta TV" dos jogos já jogados. Site de jogo com campo de texto: ao receber foco, o teclado do Android abre.
+
+**Fluidez:** aceleração por hardware, sem barras de rolagem nem efeito de "puxar" nas bordas, cache padrão do WebView, sem animações do Android por cima e sem registros (logs).
+Ao abrir, uma tela escura (#0E0F14) com o selo "24h" aparece no lugar do flash branco.
 
 ## Pastas e arquivos
 
 | Arquivo | Para que serve |
 |---|---|
-| `app/src/main/kotlin/...` | O código: `MainActivity` (tela e WebView), `Controle` (ponte do controle), `Mapa` (teclas e mapa), `PonteJs` (o que o site enxerga) |
+| `app/src/main/kotlin/...` | O código: `MainActivity` (tela e WebView), `Controle` (ponte do controle), `Mapa` (teclas e mapa), `PonteJs` (o que o site enxerga), `MenuApp` (menu por cima do WebView), `VerificadorLinks` ("No ar") |
 | `lancar-versao.bat` | Aumenta a versão, gera o APK assinado e cria a versão no GitHub |
 | `instalar-na-tv.bat` | Instala o APK no seu Fire TV pela rede |
 | `version.properties` | O número da versão (o `lancar-versao.bat` aumenta sozinho) |

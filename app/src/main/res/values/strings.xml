@@ -15,5 +15,6 @@
     <string name="erro_titulo">Sem conexão</string>
     <string name="erro_texto">Não foi possível abrir a Locadora 24h. Verifique a internet da TV.</string>
     <string name="erro_sair">Sair</string>
+    <string name="nao_abriu">Não deu pra abrir o jogo agora. Tente de novo daqui a pouco.</string>
     <string name="erro_tentar">Tentar de novo</string>
 </resources>

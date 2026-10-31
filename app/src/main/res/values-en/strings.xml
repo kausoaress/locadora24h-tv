@@ -15,5 +15,6 @@
     <string name="erro_titulo">No connection</string>
     <string name="erro_texto">Could not open Locadora 24h. Check the TV internet connection.</string>
     <string name="erro_sair">Exit</string>
+    <string name="nao_abriu">Could not open the game right now. Try again in a moment.</string>
     <string name="erro_tentar">Try again</string>
 </resources>
