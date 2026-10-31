@@ -23,4 +23,8 @@
     <string name="motivo_recusou">the game site refused access (error %1$d)</string>
     <string name="motivo_http">the game site answered with error %1$d</string>
     <string name="motivo_ssl">the game site security certificate is not valid</string>
+    <string name="menu_bloqueador">Ad blocker: %1$s</string>
+    <string name="bloqueador_ligado">on</string>
+    <string name="bloqueador_desligado">off</string>
+    <string name="dica_bloqueio">If it keeps happening, turn off the ad blocker in the ☰ menu.</string>
 </resources>

@@ -44,6 +44,7 @@ quando quem chama é o catálogo (e não um site de jogo):
 | `controles()` | Nomes dos controles de jogo conectados, ex. `["8BitDo Pro 2"]` |
 | `desempenho()` | `{id:{fps,quando}}`: quadros por segundo medidos de verdade nesta TV |
 | `setMapa(json)`, `limparMapa()`, `versao()`, `sair()` | Definem/limpam o mapa, devolvem a versão do app, fecham o app |
+| `bloqueio()` / `setBloqueio(ligado)` | Estado e contadores do bloqueador de anúncios (JSON) / liga ou desliga (só obedece o catálogo; a escolha fica guardada) |
 
 **Quadros por segundo:** 8 segundos depois de um jogo abrir, o app conta `requestAnimationFrame` por 3 s e guarda o resultado (por jogo, no próprio app).
 É isso que alimenta o selo "Roda liso nesta TV" dos jogos já jogados. Site de jogo com campo de texto: ao receber foco, o teclado do Android abre.
@@ -51,11 +52,25 @@ quando quem chama é o catálogo (e não um site de jogo):
 **Fluidez:** aceleração por hardware, sem barras de rolagem nem efeito de "puxar" nas bordas, cache padrão do WebView, sem animações do Android por cima e sem registros (logs).
 Ao abrir, uma tela escura (#0E0F14) com o selo "24h" aparece no lugar do flash branco.
 
+## Bloqueador de anúncios
+
+Só dentro deste app (e do `.exe` do Windows). É honesto dizer: **reduz** muitos anúncios, mas não garante que todos sumam.
+
+- `shouldInterceptRequest` devolve uma resposta **vazia (200)** para imagens, scripts e quadros de domínios de anúncio (o domínio ou um "pai" dele está na lista). O quadro principal nunca é barrado por aqui (a tela não fica em branco).
+- Lista embutida: `app/src/main/assets/bloqueio-hosts.txt` (StevenBlack/hosts, licença MIT; só domínios, um por linha). Para atualizar: `ferramentas/atualizar-bloqueio.bat` (na pasta do site) e depois `lancar-versao.bat`.
+- Listas extras e exceções: baixadas de `https://locadora24h.vercel.app/api/bloqueio` toda vez que o app abre (sem rede, vale a última guardada). Edite no `/admin`, aba **Anúncios**.
+- **Nunca** bloqueia o domínio do catálogo nem o da página principal do jogo aberto (nem o mesmo site). Exceções do `/admin` também nunca são bloqueadas.
+- Janela nova (`window.open`) sem clique de verdade e troca de site automática (`location.href` sem toque, depois dos 3 primeiros segundos da página) são barradas; com clique, abre na mesma janela como sempre.
+- Um CSS esconde blocos comuns de anúncio (`ins.adsbygoogle`, `doubleclick`...), sem encostar no jogo.
+- Menu do jogo (Start segurado) e menu do catálogo (☰): **"Bloqueador de anúncios: ligado/desligado"** (guardado). Quando um jogo não abre, o aviso sugere desligar.
+- Diagnóstico (`?debug=1`): mostra domínios carregados, pedidos e janelas barrados e a origem da lista extra.
+- Código: `BloqueioAnuncios.kt` (regras, testável: `BloqueioAnunciosTest`, 25 testes) e os ganchos no `MainActivity.kt`.
+
 ## Pastas e arquivos
 
 | Arquivo | Para que serve |
 |---|---|
-| `app/src/main/kotlin/...` | O código: `MainActivity` (tela e WebView), `Controle` (ponte do controle), `Mapa` (teclas e mapa), `PonteJs` (o que o site enxerga), `MenuApp` (menu por cima do WebView), `VerificadorLinks` ("No ar") |
+| `app/src/main/kotlin/...` | O código: `MainActivity` (tela e WebView), `Controle` (ponte do controle), `Mapa` (teclas e mapa), `PonteJs` (o que o site enxerga), `MenuApp` (menu por cima do WebView), `VerificadorLinks` ("No ar"), `BloqueioAnuncios` (bloqueador de anúncios) |
 | `lancar-versao.bat` | Aumenta a versão, gera o APK assinado e cria a versão no GitHub |
 | `instalar-na-tv.bat` | Instala o APK no seu Fire TV pela rede |
 | `version.properties` | O número da versão (o `lancar-versao.bat` aumenta sozinho) |

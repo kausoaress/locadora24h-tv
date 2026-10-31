@@ -13,6 +13,9 @@ interface AcoesApp {
     fun sair()
     fun salvarFps(id: String?, fps: Double)
     fun mostrarTeclado()
+    /** {ligado, dominios, extras, excecoes, origemExtras, bloqueados, noJogo, popups, navegacoes} do bloqueador de anúncios. */
+    fun bloqueio(): String
+    fun definirBloqueio(ligado: Boolean)
 }
 
 /**
@@ -55,6 +58,14 @@ class PonteJs(private val acoes: AcoesApp) {
 
     @JavascriptInterface
     fun sair() = seguro(Unit) { acoes.sair() }
+
+    /** Estado e contadores do bloqueador de anúncios (JSON). */
+    @JavascriptInterface
+    fun bloqueio(): String = seguro("{}") { acoes.bloqueio() }
+
+    /** Liga ou desliga o bloqueador de anúncios (a escolha fica guardada). Só o catálogo consegue mudar. */
+    @JavascriptInterface
+    fun setBloqueio(ligado: Boolean) = seguro(Unit) { acoes.definirBloqueio(ligado) }
 
     @JavascriptInterface
     fun versao(): String = BuildConfig.VERSION_NAME

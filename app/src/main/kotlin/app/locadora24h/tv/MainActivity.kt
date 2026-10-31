@@ -38,6 +38,10 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 /** Handler do Android como Agenda da ponte do controle. */
 private class AgendaHandler(private val handler: Handler) : Agenda {
@@ -55,6 +59,8 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         private const val MEDIR_FPS_APOS_MS = 8_000L // mede os quadros por segundo 8 s depois do jogo abrir
         private const val SPLASH_MAX_MS = 8_000L
         private const val FUNDO = "#0E0F14"
+        private const val ARQUIVO_LISTA = "bloqueio-hosts.txt"       // lista embutida (assets)
+        private const val ARQUIVO_EXTRAS = "bloqueio-extras.json"     // última lista extra baixada do site
     }
 
     private fun l(msg: String) { Log.i(TAG, msg) }
@@ -65,6 +71,8 @@ class MainActivity : Activity(), Alvo, AcoesApp {
     private lateinit var menu: MenuApp
     private lateinit var controle: Controle
     private lateinit var verificador: VerificadorLinks
+    private val bloqueio = BloqueioAnuncios()
+    @Volatile private var inicioPaginaMs = 0L
     private lateinit var prefs: SharedPreferences
     private lateinit var chrome: WebChromeClient
     private lateinit var uaCatalogo: String
@@ -102,6 +110,9 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         setContentView(raiz)
 
         prefs = getSharedPreferences("locadora24h", MODE_PRIVATE)
+        bloqueio.ligado = prefs.getBoolean("bloqueio_ligado", true)
+        bloqueio.hostCatalogo = catalogoHost
+        iniciarBloqueio()
         controle = Controle(this, AgendaHandler(handler))
         verificador = VerificadorLinks { id, r -> runOnUiThread { entregarStatus(id, r) } }
         configurarWebView()
@@ -165,12 +176,38 @@ class MainActivity : Activity(), Alvo, AcoesApp {
                 val esquema = request.url.scheme ?: return true
                 l("shouldOverrideUrlLoading: ${request.url} (quadro principal: ${request.isForMainFrame})")
                 if (esquema != "http" && esquema != "https") return true
-                if (request.isForMainFrame) ajustarUserAgent(request.url.toString())
+                if (request.isForMainFrame) {
+                    // dentro de um jogo: a página trocando de site sozinha (sem clique) é pop-under / redirecionamento de anúncio
+                    val atual = hostDe(view.url)
+                    if (atual != null && atual != catalogoHost) {
+                        val redirecionamento = Build.VERSION.SDK_INT >= 24 && request.isRedirect
+                        if (bloqueio.deveBloquearNavegacao(atual, request.url.host, request.hasGesture(), redirecionamento, SystemClock.uptimeMillis() - inicioPaginaMs)) {
+                            l("anúncios: navegação barrada: ${request.url} (de $atual)")
+                            return true
+                        }
+                    }
+                    ajustarUserAgent(request.url.toString())
+                }
                 return false
+            }
+
+            // Anúncios: barra pedidos de imagens, scripts e quadros de domínios de anúncio (devolve uma resposta vazia).
+            // O quadro principal nunca é barrado aqui (isso é com shouldOverrideUrlLoading) para a tela não ficar em branco.
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                if (request.isForMainFrame) return null
+                if (!bloqueio.deveBloquear(request.url.host)) return null
+                return WebResourceResponse("text/plain", "utf-8", 200, "OK", mapOf("Access-Control-Allow-Origin" to "*"), ByteArrayInputStream(ByteArray(0)))
+            }
+
+            override fun onPageCommitVisible(view: WebView, url: String?) {
+                if (bloqueio.ligado && hostDe(url) != catalogoHost) view.evaluateJavascript(BloqueioAnuncios.JS_CSS, null)
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 l("onPageStarted: $url")
+                inicioPaginaMs = SystemClock.uptimeMillis()
+                bloqueio.hostPagina = if (hostDe(url) == catalogoHost) null else hostDe(url)
+                if (bloqueio.ligado && hostDe(url) != catalogoHost) view.evaluateJavascript(BloqueioAnuncios.JS_CSS, null)
                 ajustarUserAgent(url)
                 controle.soltarTudo()
                 handler.removeCallbacks(medirFps)
@@ -181,6 +218,7 @@ class MainActivity : Activity(), Alvo, AcoesApp {
                 l("onPageFinished: $url")
                 esconderSplash()
                 view.requestFocus()
+                if (bloqueio.ligado && hostDe(url) != catalogoHost) view.evaluateJavascript(BloqueioAnuncios.JS_CSS, null)
                 if (hostDe(url) == catalogoHost) aoCatalogoCarregar() else aoJogoCarregar()
             }
 
@@ -240,6 +278,12 @@ class MainActivity : Activity(), Alvo, AcoesApp {
             // window.open / target=_blank: a URL nova carrega NESTA MESMA WebView (nunca abre outra janela)
             override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message): Boolean {
                 l("onCreateWindow: isDialog=$isDialog, gesto=$isUserGesture")
+                // sem clique de verdade: é pop-up de anúncio, não abre nada (window.open devolve null para a página)
+                if (bloqueio.ligado && !isUserGesture && hostDe(view.url) != catalogoHost) {
+                    bloqueio.deveBloquearJanela(null, false)
+                    l("anúncios: janela nova sem clique barrada")
+                    return false
+                }
                 val transporte = resultMsg.obj as? WebView.WebViewTransport ?: return false
                 val temp = WebView(this@MainActivity)
                 temp.webViewClient = object : WebViewClient() {
@@ -248,6 +292,12 @@ class MainActivity : Activity(), Alvo, AcoesApp {
                         if (feito || url.isNullOrEmpty() || url == "about:blank") return
                         if (!(url.startsWith("http://") || url.startsWith("https://"))) return
                         feito = true
+                        // com clique, mas indo para um domínio de anúncio: também barra
+                        if (bloqueio.deveBloquearJanela(hostDe(url), true)) {
+                            l("anúncios: janela nova para domínio de anúncio barrada: $url")
+                            handler.post { temp.stopLoading(); temp.destroy() }
+                            return
+                        }
                         l("janela nova -> mesma WebView: $url")
                         handler.post {
                             ajustarUserAgent(url)
@@ -378,6 +428,7 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         menu.mostrar(getString(R.string.menu_titulo), null, listOf(
             getString(R.string.menu_continuar) to { },
             getString(R.string.menu_ver_mapa) to { mostrarMapa() },
+            getString(R.string.menu_bloqueador, textoBloqueador()) to { definirBloqueio(!bloqueio.ligado); abrirMenu() },
             getString(R.string.menu_voltar_catalogo) to { voltarAoCatalogo(null) }
         ))
     }
@@ -397,6 +448,8 @@ class MainActivity : Activity(), Alvo, AcoesApp {
             if (!noCatalogo()) { l("abrirJogo ignorado: a página atual não é o catálogo (${webView.url})"); return@runOnUiThread }
             if (url.isNullOrBlank() || !(url.startsWith("https://") || url.startsWith("http://"))) { l("abrirJogo ignorado: URL inválida"); return@runOnUiThread }
             mapaAtual = MapaParser.parse(mapaJson)
+            bloqueio.zerarContagemDoJogo()
+            bloqueio.hostPagina = hostDe(url)
             jogoForcado = true
             jogoCarregou = false
             jogoId = id
@@ -454,6 +507,52 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         l("sair() pedido pelo site")
         runOnUiThread { if (noCatalogo()) finish() }
     }
+
+    override fun bloqueio(): String = bloqueio.resumoJson()
+
+    override fun definirBloqueio(ligado: Boolean) {
+        if (bloqueio.ligado == ligado) return
+        // o valor muda já (o site pergunta o estado logo em seguida); só o que mexe na página espera a tela principal
+        bloqueio.ligado = ligado
+        prefs.edit().putBoolean("bloqueio_ligado", ligado).apply()
+        l("bloqueador de anúncios ${if (ligado) "LIGADO" else "DESLIGADO"}")
+        runOnUiThread {
+            if (!ligado) webView.evaluateJavascript("(function(){var s=document.getElementById('l24h-ads');if(s)s.remove()})();", null)
+            else if (!noCatalogo()) webView.evaluateJavascript(BloqueioAnuncios.JS_CSS, null)
+        }
+    }
+
+    private fun textoBloqueador(): String = getString(if (bloqueio.ligado) R.string.bloqueador_ligado else R.string.bloqueador_desligado)
+
+    /** Carrega a lista embutida e a lista extra do site, fora da tela principal (para o app abrir sem demora). */
+    private fun iniciarBloqueio() {
+        Thread {
+            try {
+                assets.open(ARQUIVO_LISTA).bufferedReader().useLines { bloqueio.carregarBase(it) }
+                l("anúncios: lista embutida carregada (${bloqueio.tamanhoBase} domínios)")
+            } catch (e: Exception) { l("anúncios: não consegui ler a lista embutida: ${e.message}") }
+            val cache = File(filesDir, ARQUIVO_EXTRAS)
+            val baixado = baixarExtras()
+            val lidas = BloqueioAnuncios.lerListas(baixado)
+            if (lidas != null) {
+                bloqueio.definirListas(lidas.first, lidas.second, "rede")
+                try { cache.writeText(baixado ?: "") } catch (e: Exception) { /* sem cache desta vez */ }
+                l("anúncios: lista extra da rede (${lidas.first.size} extras, ${lidas.second.size} exceções)")
+            } else {
+                val antiga = try { if (cache.exists()) cache.readText() else null } catch (e: Exception) { null }
+                val l2 = BloqueioAnuncios.lerListas(antiga)
+                if (l2 != null) { bloqueio.definirListas(l2.first, l2.second, "cache"); l("anúncios: sem rede; usando a última lista extra guardada") }
+                else l("anúncios: sem lista extra (só a embutida)")
+            }
+        }.start()
+    }
+
+    private fun baixarExtras(): String? = try {
+        val c = URL("${BuildConfig.START_URL.substringBefore("/?")}/api/bloqueio").openConnection() as HttpURLConnection
+        c.connectTimeout = 6000; c.readTimeout = 6000
+        c.setRequestProperty("Cache-Control", "no-cache")
+        try { if (c.responseCode == 200) c.inputStream.bufferedReader().readText() else null } finally { c.disconnect() }
+    } catch (e: Exception) { null }
 
     override fun salvarFps(id: String?, fps: Double) {
         if (id.isNullOrBlank() || id != jogoId || fps.isNaN() || fps.isInfinite() || fps < 0 || fps > 240) return
@@ -524,7 +623,7 @@ class MainActivity : Activity(), Alvo, AcoesApp {
         jogoId = null
         tokenJogo++
         handler.removeCallbacks(medirFps)
-        avisoPendente = if (motivo != null) getString(R.string.nao_abriu_motivo, motivo) else null
+        avisoPendente = if (motivo != null) getString(R.string.nao_abriu_motivo, motivo) + (if (bloqueio.ligado) " " + getString(R.string.dica_bloqueio) else "") else null
         webView.stopLoading()
         ajustarUserAgent(BuildConfig.START_URL)
         webView.loadUrl(BuildConfig.START_URL)

@@ -23,4 +23,8 @@
     <string name="motivo_recusou">o site do jogo recusou o acesso (erro %1$d)</string>
     <string name="motivo_http">o site do jogo respondeu erro %1$d</string>
     <string name="motivo_ssl">o certificado de segurança do site do jogo não é válido</string>
+    <string name="menu_bloqueador">Bloqueador de anúncios: %1$s</string>
+    <string name="bloqueador_ligado">ligado</string>
+    <string name="bloqueador_desligado">desligado</string>
+    <string name="dica_bloqueio">Se continuar assim, desligue o bloqueador de anúncios no menu ☰.</string>
 </resources>
