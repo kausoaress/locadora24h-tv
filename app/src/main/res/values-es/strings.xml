@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Locadora 24h TV</string>
+    <string name="sair_titulo">¿Salir de la app?</string>
+    <string name="sim">Sí</string>
+    <string name="nao">No</string>
+    <string name="menu_titulo">Menú del juego</string>
+    <string name="menu_ver_mapa">Ver mapa del mando</string>
+    <string name="menu_voltar_catalogo">Volver al catálogo</string>
+    <string name="menu_continuar">Continuar</string>
+    <string name="mapa_titulo">Mapa del mando</string>
+    <string name="mapa_direcional">Cruceta</string>
+    <string name="mapa_sem_uso">sin uso</string>
+    <string name="mapa_ok">OK</string>
+    <string name="erro_titulo">Sin conexión</string>
+    <string name="erro_texto">No se pudo abrir Locadora 24h. Revisa el internet de la TV.</string>
+    <string name="erro_sair">Salir</string>
+    <string name="erro_tentar">Intentar de nuevo</string>
+</resources>

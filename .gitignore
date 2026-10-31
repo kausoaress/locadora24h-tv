@@ -1,0 +1,17 @@
+# Nunca vão para o Git: a chave de assinatura e as senhas
+chave-do-app/
+keystore.properties
+
+# Específico desta máquina
+local.properties
+tv-ip.txt
+
+# Geradas pelo Gradle / pelo script de versão
+.gradle/
+build/
+app/build/
+dist/
+*.apk
+*.aab
+.idea/
+*.iml
