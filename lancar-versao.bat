@@ -3,6 +3,7 @@ rem Lanca uma versao nova do app: aumenta o numero, gera o APK assinado e public
 setlocal
 cd /d "%~dp0"
 chcp 65001 >nul
+set "PASTA=%~dp0"
 set "JAVA_HOME=C:\Program Files\Microsoft\jdk-17.0.21.21-hotspot"
 set "ANDROID_HOME=%USERPROFILE%\Android\Sdk"
 set "PATH=%JAVA_HOME%\bin;C:\Program Files\GitHub CLI;C:\Program Files\Git\cmd;%PATH%"
@@ -20,7 +21,7 @@ echo.
 echo === Versao nova: 1.0.%NOVA% ^(a anterior era 1.0.%ANTIGA%^) ===
 
 rem 2) gera o APK assinado
-call gradlew.bat assembleRelease
+call "%~dp0gradlew.bat" assembleRelease
 if errorlevel 1 (
   echo.
   echo O build deu erro. Voltando o numero da versao para %ANTIGA%.
