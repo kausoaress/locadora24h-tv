@@ -85,6 +85,18 @@ Guarde uma cópia da pasta `chave-do-app/` **e** do `keystore.properties` num pe
 
 Sem PC: no Fire TV instale o app **Downloader**, abra e digite `locadora24h.vercel.app/tv`.
 
+## Ver o que o app está fazendo (Logcat)
+
+O app escreve cada passo no Logcat do Android com a tag **`L24H`**: o `abrirJogo` recebido (url e id), o `loadUrl`, `onPageStarted`, `onPageFinished`,
+`onReceivedError` (com código e descrição), `onReceivedHttpError`, `onReceivedSslError`, `onRenderProcessGone`, os user agents usados e o limite de 15 s.
+Fica ligado também na versão final (é só texto).
+
+1. Deixe a Depuração ADB ligada no Fire TV (veja "Instalar no Fire TV pela rede").
+2. **Dois cliques em `logcat-da-tv.bat`**: ele conecta na TV, grava tudo da tag `L24H` em `logcat-L24H.txt` e mostra na tela.
+3. Para acompanhar ao vivo, num terminal: `adb connect IP:5555` e depois `adb logcat -s L24H` (o `adb` fica em `%USERPROFILE%\Android\Sdk\platform-tools`). Ctrl+C para parar.
+
+No site, o log do modo TV aparece em **?debug=1** ou **segurando Select por 2 segundos**: mostra a versão do site e do app, a URL do jogo, o user agent e os últimos eventos.
+
 ## Ferramentas usadas (só linha de comando)
 
 Java 17 (Microsoft OpenJDK), Android SDK (command-line tools, platform-tools, build-tools 34, plataforma 34), Gradle 8.10.2 (wrapper),
